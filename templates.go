@@ -7,8 +7,16 @@
 
 package main
 
-const indexHTML = `
-<html><body>
-<a href="/login">Log in with GitHub</a>
-</body></html>
-`
+import "html/template"
+
+var indexHTML = template.Must(template.New("authorized").Parse(`
+<html>
+	<body>
+	{{ if .Authorized }}
+	<p>Hello, <b>{{ .User }}</b> !</p>
+	{{ else }}
+	<p>Log in with <a href="/oauth">GitHub</a></p>
+	{{ end }}
+	</body>
+</html>
+`))
