@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -26,17 +27,25 @@ const SessionCookieName = "_session_"
 const MaxSessions = 4096
 
 type Session struct {
-	ID         string
-	Expires    time.Time
-	OAuthToken *oauth2.Token
-	User       string
+	ID      string
+	Expires time.Time
+	Token   *oauth2.Token
+	User    string
+}
+
+func (s *Session) TokenJSON() string {
+	if s.Token == nil {
+		return ""
+	}
+	b, _ := json.MarshalIndent(s.Token, "", "  ")
+	return string(b)
 }
 
 func (s *Session) Authorized() bool {
-	if s.User == "" || s.OAuthToken == nil {
+	if s.User == "" || s.Token == nil {
 		return false
 	}
-	return s.OAuthToken.Valid()
+	return s.Token.Valid()
 }
 
 type SessionProvider interface {
@@ -52,7 +61,8 @@ func SessionCtx(p SessionProvider) func(http.Handler) http.Handler {
 				s = p.GetSession(c.Value)
 			}
 			if s == nil {
-				s, err := p.NewSession()
+				var err error
+				s, err = p.NewSession()
 				if err != nil {
 					log.Printf("SessionCtx: %v", err)
 					next.ServeHTTP(w, r)
