@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -21,6 +22,8 @@ import (
 
 const SessionIdLen = 32
 const SessionCtxKey = "session"
+const SessionCookieName = "_session_"
+const MaxSessions = 4096
 
 type Session struct {
 	ID         string
@@ -37,26 +40,30 @@ func (s *Session) Authorized() bool {
 }
 
 type SessionProvider interface {
-	CookieName() string
 	GetSession(id string) *Session
-	NewSession() *Session
+	NewSession() (*Session, error)
 }
 
 func SessionCtx(p SessionProvider) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var s *Session
-			if c, err := r.Cookie(p.CookieName()); err == nil {
+			if c, err := r.Cookie(SessionCookieName); err == nil {
 				s = p.GetSession(c.Value)
 			}
 			if s == nil {
-				s = p.NewSession()
+				s, err := p.NewSession()
+				if err != nil {
+					log.Printf("SessionCtx: %v", err)
+					next.ServeHTTP(w, r)
+					return
+				}
 				log.Printf("New session: '%s'", s.ID)
 			} else {
 				log.Printf("Old session: '%s'", s.ID)
 			}
 			c := &http.Cookie{
-				Name:     p.CookieName(),
+				Name:     SessionCookieName,
 				Value:    s.ID,
 				HttpOnly: true,
 				Path:     "/",
@@ -83,10 +90,6 @@ func NewInMemorySessionProvider() *InMemorySessionProvider {
 	}
 }
 
-func (p *InMemorySessionProvider) CookieName() string {
-	return "_session_"
-}
-
 func (p *InMemorySessionProvider) GetSession(id string) *Session {
 	if id == "" {
 		return nil
@@ -97,26 +100,43 @@ func (p *InMemorySessionProvider) GetSession(id string) *Session {
 	}
 	p.mxSession.Lock()
 	defer p.mxSession.Unlock()
+	p.cleanup()
 	if s, ok := p.session[id]; ok {
-		if s.Expires.After(time.Now()) {
-			s.Expires = time.Now().Add(7 * 24 * time.Hour)
-			return s
-		}
-		log.Printf("delete expired session: %s", id)
-		delete(p.session, id)
+		s.Expires = time.Now().Add(7 * 24 * time.Hour)
+		return s
 	}
 	return nil
 }
 
-func (p *InMemorySessionProvider) NewSession() *Session {
+func (p *InMemorySessionProvider) cleanup() {
+	l := []string{}
+	for id, s := range p.session {
+		if s.Expires.Before(time.Now()) {
+			l = append(l, id)
+		}
+	}
+	for i := range l {
+		log.Printf("delete expired session: %s", l[i])
+		delete(p.session, l[i])
+	}
+}
+
+func (p *InMemorySessionProvider) NewSession() (*Session, error) {
 	p.mxSession.Lock()
 	defer p.mxSession.Unlock()
-	b := make([]byte, (SessionIdLen / 4 * 3))
-	p.sessionRand.Read(b)
-	s := &Session{
-		ID:      base64.StdEncoding.EncodeToString(b),
-		Expires: time.Now().Add(7 * 24 * time.Hour),
+	if len(p.session) > MaxSessions {
+		return nil, fmt.Errorf("too many sessions")
 	}
-	p.session[s.ID] = s
-	return s
+	b := make([]byte, (SessionIdLen / 4 * 3))
+	for {
+		p.sessionRand.Read(b)
+		s := &Session{
+			ID:      base64.StdEncoding.EncodeToString(b),
+			Expires: time.Now().Add(7 * 24 * time.Hour),
+		}
+		if _, ok := p.session[s.ID]; !ok {
+			p.session[s.ID] = s
+			return s, nil
+		}
+	}
 }
